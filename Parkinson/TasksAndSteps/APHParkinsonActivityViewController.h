@@ -52,14 +52,6 @@ extern  NSString  *const kMomentInDayStepIdentifier;
 
 extern  NSString  *const kMomentInDayFormat;
 
-extern  NSString  *kMomentInDayFormatTitle;
-
-extern  NSString  *kMomentInDayFormatItemText;
-extern  NSString  *kMomentInDayFormatChoiceJustWokeUp;
-extern  NSString  *kMomentInDayFormatChoiceTookMyMedicine;
-extern  NSString  *kMomentInDayFormatChoiceEvening;
-extern  NSString  *kMomentInDayFormatChoiceNone;
-
     //
     //    key for Parkinson Stashed Question Result
     //        from 'When Did You Take Your Medicine' Pre-Survey Question

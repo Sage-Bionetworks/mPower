@@ -43,15 +43,6 @@ NSString  *const kMomentInDayStepIdentifier             = @"momentInDay";
 
 NSString  *const kMomentInDayFormat                     = @"momentInDayFormat";
 
-NSString  *kMomentInDayFormatTitle;
-
-NSString  *kMomentInDayFormatItemText;
-
-NSString  *kMomentInDayFormatChoiceJustWokeUp;
-NSString  *kMomentInDayFormatChoiceTookMyMedicine;
-NSString  *kMomentInDayFormatChoiceEvening;
-NSString  *kMomentInDayFormatChoiceNone;
-
     //
     //    key for Parkinson Stashed Question Result
     //        from 'When Did You Take Your Medicine' Pre-Survey Question
@@ -66,6 +57,7 @@ NSString  *const kMomentInDayQuestionTypeKey            = @"MomentInDayQuestionT
 NSString  *const kMomentInDayIdentifierKey              = @"MomentInDayIdentifier";
 NSString  *const kMomentInDayStartDateKey               = @"MomentInDayStartDate";
 NSString  *const kMomentInDayEndDateKey                 = @"MomentInDayEndDate";
+NSString  *const kMomentInDayChoiceNoneKey              = @"MomentInDayNoneChoice";
 
     //
     //    keys for Parkinson Conclusion Step View Controller
@@ -73,10 +65,13 @@ NSString  *const kMomentInDayEndDateKey                 = @"MomentInDayEndDate";
 NSString  *kConclusionStepThankYouTitle;
 NSString  *kConclusionStepViewDashboard;
 
-    //
-    //    elapsed time delay before asking the patient if they took their medications
-    //
-static  double  kMinimumAmountOfTimeToShowSurvey         = 20.0 * 60.0;
+//
+//    elapsed time delay before asking the patient if they took their medications
+//
+static  NSTimeInterval  kMinimumAmountOfTimeToShowSurvey         = 20.0 * 60.0;
+static  NSTimeInterval  kMinimumAmountOfTimeToShowSurveyIfNoMeds = 30.0 * 24.0 * 60.0 * 60.0;
+
+static NSString *kMomentInDayNoneChoice = nil;
 
 @interface APHParkinsonActivityViewController ()
 
@@ -112,21 +107,8 @@ static  double  kMinimumAmountOfTimeToShowSurvey         = 20.0 * 60.0;
 + (void)initialize
 {
     void (^localizeBlock)() = [^{
-        //
-        //    keys for the extra step ('Pre-Survey') that;'s injected
-        //        into Parkinson Activities to ask the Patient if they
-        //        have taken their medications
-        //
         
-        kMomentInDayFormatTitle                = NSLocalizedString(@"We would like to understand how your performance on"
-        " this activity could be affected by the timing of your medication.", @"Explanation of purpose of pre-activity medication timing survey.");
-        
-        kMomentInDayFormatItemText             = NSLocalizedString(@"When are you performing this Activity?", @"Prompt for timing of medication in pre-activity medication timing survey.");
-        
-        kMomentInDayFormatChoiceJustWokeUp     = NSLocalizedString(@"Immediately before Parkinson medication", @"Timing option text in pre-activity medication timing survey.");
-        kMomentInDayFormatChoiceTookMyMedicine = NSLocalizedString(@"Just after Parkinson medication (at your best)", @"Timing option text in pre-activity medication timing survey.");
-        kMomentInDayFormatChoiceEvening        = NSLocalizedString(@"Another time", @"Timing option text in pre-activity medication timing survey.");
-        kMomentInDayFormatChoiceNone           = NSLocalizedString(@"I don't take Parkinson medications", @"Timing option text in pre-activity medication timing survey.");
+        kMomentInDayNoneChoice = NSLocalizedString(@"I don't take Parkinson medications", @"Timing option text in pre-activity medication timing survey for someone who doesn't take medication.");
         
         //
         //    keys for Parkinson Conclusion Step View Controller
@@ -141,35 +123,91 @@ static  double  kMinimumAmountOfTimeToShowSurvey         = 20.0 * 60.0;
     localizeBlock();
 }
 
+#pragma mark - Store MomentInDayResult
+
+- (void)saveMomentInDayResult:(ORKStepResult *)stepResult
+{
+    if ([stepResult.results count] > 0) {
+        id  object = [stepResult.results lastObject];
+        if ([object isKindOfClass:[ORKChoiceQuestionResult class]] == YES) {
+            ORKChoiceQuestionResult  *result = (ORKChoiceQuestionResult *)object;
+            NSString *answer = result.choiceAnswers.lastObject;
+            if (answer != nil) {
+                NSDictionary  *dictionary = @{
+                                              kMomentInDayChoiceAnswerKey : answer,
+                                              kMomentInDayQuestionTypeKey : @(result.questionType),
+                                              kMomentInDayIdentifierKey   : result.identifier,
+                                              kMomentInDayStartDateKey    : result.startDate,
+                                              kMomentInDayEndDateKey      : result.endDate,
+                                              kMomentInDayChoiceNoneKey   : @([kMomentInDayNoneChoice isEqualToString:answer])
+                                              };
+                NSUserDefaults  *defaults = [NSUserDefaults standardUserDefaults];
+                [defaults setObject:dictionary forKey:kMomentInDayUserDefaultsKey];
+                [defaults synchronize];
+            }
+        }
+    }
+}
+
+#pragma mark - modify task
+
 + (ORKOrderedTask *)modifyTaskWithPreSurveyStepIfRequired:(ORKOrderedTask *)task andTitle:(NSString *)taskTitle
 {
     APHAppDelegate  *appDelegate = (APHAppDelegate *)[UIApplication sharedApplication].delegate;
     NSDate          *lastCompletionDate = appDelegate.dataSubstrate.currentUser.taskCompletion;
     NSTimeInterval   numberOfSecondsSinceTaskCompletion = [[NSDate date] timeIntervalSinceDate: lastCompletionDate];
+    NSDictionary  *stashedSurvey = [[NSUserDefaults standardUserDefaults] objectForKey:kMomentInDayUserDefaultsKey];
+    BOOL noMeds = [stashedSurvey[kMomentInDayChoiceNoneKey] boolValue];
+    NSTimeInterval minInterval = noMeds ? kMinimumAmountOfTimeToShowSurveyIfNoMeds : kMinimumAmountOfTimeToShowSurvey;
     
     ORKOrderedTask  *replacementTask = task;
     
-    if (numberOfSecondsSinceTaskCompletion > kMinimumAmountOfTimeToShowSurvey || lastCompletionDate == nil) {
-    
+    if (lastCompletionDate == nil || stashedSurvey == nil || numberOfSecondsSinceTaskCompletion > minInterval)
+    {
+        
         NSMutableArray  *stepQuestions = [NSMutableArray array];
         
-        ORKFormStep  *step = [[ORKFormStep alloc] initWithIdentifier:kMomentInDayStepIdentifier title:nil text:kMomentInDayFormatTitle];
+        
+        NSString *title = NSLocalizedString(@"We would like to understand how your performance on"
+                                            " this activity could be affected by the timing of your medication.", @"Explanation of purpose of pre-activity medication timing survey.");
+        ORKFormStep  *step = [[ORKFormStep alloc] initWithIdentifier:kMomentInDayStepIdentifier title:nil text:title];
         
         step.optional = NO;
         
         {
-            NSArray *choices = @[
-                                 kMomentInDayFormatChoiceJustWokeUp,
-                                 kMomentInDayFormatChoiceTookMyMedicine,
-                                 kMomentInDayFormatChoiceEvening,
-                                 kMomentInDayFormatChoiceNone
-                                 ];
+            NSString *itemText = NSLocalizedString(@"When was the last time you took any of your PARKINSON MEDICATIONS?",
+                                                   @"Prompt for timing of medication in pre-activity medication timing survey.");
+            
+
+            
+            NSString *notSureChoice = NSLocalizedString(@"Not sure", @"Timing option text in pre-activity medication timing survey for someone who is unsure of when medication was last taken.");
+            
+            NSString *formatMinutes = NSLocalizedString(@"%1$@-%2$@ minutes ago", @"Format for a time interval of %1$@ to %2$@ minutes ago where %1$@ is the localized number for the smaller value and %2$@ is the localized number for the larger value.");
+            NSString *formatHours = NSLocalizedString(@"%1$@-%2$@ hours ago", @"Format for a time interval of %1$@ to %2$@ hours ago where %1$@ is the localized number for the smaller value and %2$@ is the localized number for the larger value.");
+            NSString *formatMoreThanHoursAgo = NSLocalizedString(@"More than %@ hours ago", @"Timing option text in pre-activity medication timing survey for more than %@ hours ago.");
+            
+            NSNumberFormatter *numberFormatter = [[NSNumberFormatter alloc] init];
+            [numberFormatter setNumberStyle:NSNumberFormatterDecimalStyle];
+            
+            NSString * (^formattedInterval)(NSNumber *, NSNumber *, NSString *) = ^(NSNumber * minTime, NSNumber * maxTime, NSString *format){
+                return [NSString stringWithFormat:format, [numberFormatter stringForObjectValue:minTime], [numberFormatter stringForObjectValue:maxTime]];
+            };
+            
+            NSArray *choices = @[formattedInterval(@(0), @(30), formatMinutes),
+                                 formattedInterval(@(30), @(60), formatMinutes),
+                                 formattedInterval(@(1), @(2), formatHours),
+                                 formattedInterval(@(2), @(4), formatHours),
+                                 formattedInterval(@(4), @(8), formatHours),
+                                 [NSString stringWithFormat:formatMoreThanHoursAgo, [numberFormatter stringForObjectValue:@(8)]],
+                                 notSureChoice,
+                                 kMomentInDayNoneChoice];
+
             ORKAnswerFormat  *format = [ORKTextChoiceAnswerFormat
                                         choiceAnswerFormatWithStyle:ORKChoiceAnswerStyleSingleChoice
                                                          textChoices:choices];
             
             ORKFormItem  *item = [[ORKFormItem alloc] initWithIdentifier:kMomentInDayFormat
-                                                                   text:kMomentInDayFormatItemText
+                                                                   text:itemText
                                                            answerFormat:format];
             [stepQuestions addObject:item];
         }
@@ -184,39 +222,6 @@ static  double  kMinimumAmountOfTimeToShowSurvey         = 20.0 * 60.0;
     return  replacementTask;
 }
 
-#pragma  mark  -  Step View Controller Delegate Methods
-
-- (void)stepViewControllerResultDidChange:(ORKStepViewController *)stepViewController
-{
-    NSString  *stepIdentifier = stepViewController.step.identifier;
-    if ([stepIdentifier isEqualToString:kMomentInDayStepIdentifier] == YES) {
-        ORKStepResult  *stepResult = stepViewController.result;
-        if ([stepResult.results count] > 0) {
-            id  object = [stepResult.results lastObject];
-            if ([object isKindOfClass:[ORKChoiceQuestionResult class]] == YES) {
-                ORKChoiceQuestionResult  *result = (ORKChoiceQuestionResult *)object;
-                    //
-                    //  stash the object away
-                    //
-                if (result.choiceAnswers.lastObject != nil) {
-                    NSDictionary  *dictionary = @{
-                                                  kMomentInDayChoiceAnswerKey : result.choiceAnswers.lastObject,
-                                                  kMomentInDayQuestionTypeKey : @(result.questionType),
-                                                  kMomentInDayIdentifierKey   : result.identifier,
-                                                  kMomentInDayStartDateKey    : result.startDate,
-                                                  kMomentInDayEndDateKey      : result.endDate,
-                                                  };
-                    NSUserDefaults  *defaults = [NSUserDefaults standardUserDefaults];
-                    [defaults setObject:dictionary forKey:kMomentInDayUserDefaultsKey];
-                    [defaults synchronize];
-                }
-            }
-        }
-    }
-    if ([super respondsToSelector:@selector(stepViewControllerResultDidChange:)] == YES) {
-        [super stepViewControllerResultDidChange:stepViewController];
-    }
-}
 
 #pragma  mark  -  Task View Controller Delegate Methods
 
@@ -226,8 +231,11 @@ static  double  kMinimumAmountOfTimeToShowSurvey         = 20.0 * 60.0;
         
         ORKResult  *stepResult = [[taskViewController result] resultForIdentifier:kMomentInDayStepIdentifier];
         
-        if (stepResult == nil) {
-            
+        if (stepResult != nil && [stepResult isKindOfClass:[ORKStepResult class]]) {
+            [self saveMomentInDayResult:(ORKStepResult*)stepResult];
+        }
+        else {
+        
             NSDictionary  *stashedSurvey = [[NSUserDefaults standardUserDefaults] objectForKey:kMomentInDayUserDefaultsKey];
             
             if (stashedSurvey != nil) {
